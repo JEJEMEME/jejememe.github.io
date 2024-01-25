@@ -22,13 +22,3 @@ To address this, we've developed a Swift extension for `UIImage` that ensures th
 Here's the gist of the code for this extension:
 
 <script src="https://gist.github.com/raykim2414/d4301a08bb5cce22dcff69dee0e5d6cf.js"></script>
-
-### Usage in CoreML and Other Image Processing Tasks
-
-Correcting the orientation of a `UIImage` before conversion to `CIImage` is particularly beneficial in scenarios involving CoreML. Here’s an example of how you can use this extension:
-
-```swift
-let originalImage: UIImage = // Your UIImage source
-let correctlyOrientedImage = originalImage.imageWithOrientationSetToUp()
-let ciImage = CIImage(image: correctlyOrientedImage)
-// Proceed with your CoreML or other image processing tasks
