@@ -21,9 +21,10 @@
 title: JEJEMEME Tech blog
 email: dev@jejememe.com
 description: >- # this means to ignore newlines until "baseurl:"
-  Write an awesome description for your new site here. You can edit this
-  line in _config.yml. It will appear in your document head meta (for
-  Google search results) and in your feed.xml site description.
+  Welcome to the JEJEMEME Tech Blog, the home of 쑥쑥찰칵 - a service dedicated to organizing and sharing family memories.
+  Our blog serves as a platform for discussing technical challenges, creative solutions, and the journey of our dedicated team in making family moments more cherishable.
+  Join us to discover how technology can enhance the way we capture and share life's precious moments. 
+  Visit our official website at [JejeMeme](https://jejememe.com) for more information about our services.
 baseurl: "" # the subpath of your site, e.g. /blog
 url: "" # the base hostname & protocol for your site, e.g. http://example.com
 #twitter_username: jekyllrb
