@@ -30,28 +30,28 @@ Differentiating between these navigations is crucial for:
    - Next.js triggers events like `routeChangeStart` and `routeChangeComplete`.
    - Use these events to identify internal navigation, which does not reload the whole page.
 
-   \```javascript
-   import Router from 'next/router';
+\`\`\`javascript
+import Router from 'next/router';
 
-   Router.events.on('routeChangeStart', url => {
-     console.log('Routing to:', url);
-   });
-   \```
+Router.events.on('routeChangeStart', url => {
+  console.log('Routing to:', url);
+});
+\`\`\`
 
 2. **Browser History Navigation**:
    - The `window.popstate` event is triggered when the browser's history changes.
    - Use this to detect navigations that involve the browser's history stack, such as the back button.
 
-   \```javascript
-   useEffect(() => {
-     const handlePopState = (event) => {
-       console.log('Browser navigation detected');
-     };
+\`\`\`javascript
+useEffect(() => {
+  const handlePopState = (event) => {
+    console.log('Browser navigation detected');
+  };
 
-     window.addEventListener('popstate', handlePopState);
-     return () => window.removeEventListener('popstate', handlePopState);
-   }, []);
-   \```
+  window.addEventListener('popstate', handlePopState);
+  return () => window.removeEventListener('popstate', handlePopState);
+}, []);
+\`\`\`
 
 ### Implementing the Solution
 
@@ -62,4 +62,4 @@ Implementing listeners for both React Router events and the `window.popstate` ev
 Understanding and correctly handling the differences between browser and React Router navigations in Next.js is key to building robust and efficient web applications. By leveraging specific events, developers can ensure better state management, accurate analytics, and a smoother user experience.
 
 The projects below can help make this easier to manage.
-https://github.com/JEJEMEME/useNextRouteEvent
+[useNextRouteEvent](https://github.com/JEJEMEME/useNextRouteEvent)
