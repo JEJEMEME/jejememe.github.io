@@ -30,28 +30,13 @@ Differentiating between these navigations is crucial for:
    - Next.js triggers events like `routeChangeStart` and `routeChangeComplete`.
    - Use these events to identify internal navigation, which does not reload the whole page.
 
-\`\`\`javascript
-import Router from 'next/router';
-
-Router.events.on('routeChangeStart', url => {
-  console.log('Routing to:', url);
-});
-\`\`\`
+<script src="https://gist.github.com/raykim2414/7aa1b6243e4e8871eec57ccc43c4ff6f.js"></script>
 
 2. **Browser History Navigation**:
    - The `window.popstate` event is triggered when the browser's history changes.
    - Use this to detect navigations that involve the browser's history stack, such as the back button.
 
-\`\`\`javascript
-useEffect(() => {
-  const handlePopState = (event) => {
-    console.log('Browser navigation detected');
-  };
-
-  window.addEventListener('popstate', handlePopState);
-  return () => window.removeEventListener('popstate', handlePopState);
-}, []);
-\`\`\`
+<script src="https://gist.github.com/raykim2414/fdc3fdde0cd407bb92294baefdd8ce1f.js"></script>
 
 ### Implementing the Solution
 
