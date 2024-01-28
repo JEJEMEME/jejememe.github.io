@@ -1,4 +1,3 @@
-
 ---
 layout: post
 title:  "Explicitly Distinguishing Between Browser and React Router Navigations in Next.js"
