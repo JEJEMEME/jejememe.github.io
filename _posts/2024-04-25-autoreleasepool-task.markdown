@@ -6,7 +6,6 @@ categories: iOS Swift Memory AutoreleasePool
 author: raykim
 author_url: https://github.com/raykim2414
 ---
-
 ### AutoreleasePool Lifecycle
 
 At its core, AutoreleasePool is a memory management tool that allows developers to defer the release of objects until a later point in time. It operates by creating a pool of objects that are automatically released when the pool is drained or deallocated. Let's examine the lifecycle of an AutoreleasePool:
