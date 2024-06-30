@@ -37,3 +37,5 @@ plugins:
 collections:
   authors:
     output: true
+
+google_analytics: G-QWGVVVX2EM
