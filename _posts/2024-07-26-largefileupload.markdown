@@ -1,23 +1,110 @@
 ---
 layout: post
-title: "Optimizing Large File Uploads in Swift: Efficient Data Handling with Memory Mapping"
+title: "Optimizing Large File Uploads in Swift: Comparing Original and Improved Approaches"
 date: 2024-04-25
 categories: iOS Swift Networking FileUpload MemoryManagement
 author: raykim
 author_url: https://github.com/raykim2414
 ---
 
-# Optimizing Large File Uploads in Swift: Efficient Data Handling with Memory Mapping
+# Optimizing Large File Uploads in Swift: Detailed Comparison of Approaches
 
-In our ongoing efforts to improve large file uploads in iOS applications, we've discovered that the way we handle `Data` objects is crucial for efficient memory management. A key aspect of this is the use of memory mapping, which can significantly improve performance and reduce memory overhead. Let's dive deep into how we implemented this in our chunked upload method.
+In our journey to improve large file uploads in iOS applications, we've made significant changes to our implementation. Let's take a detailed look at our original approach, its limitations, and how we improved upon it.
 
-## The Importance of Memory Mapping
+## Original Approach: Single-Load Upload
 
-Memory mapping is a technique that maps a file directly into the address space of a process. This can be more efficient than reading the entire file into memory, especially for large files. In Swift, we can use the `.mappedIfSafe` option when creating a `Data` object from a file to take advantage of this technique.
+Initially, our file upload method looked something like this:
 
-## Implementation with Memory Mapping
+```swift
+private func s3Upload(data: Data, key: String, completion: @escaping (Bool) -> Void) {
+    let s3 = S3()
+    let payload = AWSPayload.data(data)
+    let putObjectRequest = S3.PutObjectRequest(acl: .publicRead,
+                                               body: payload,
+                                               bucket: bucketName,
+                                               key: key)
+    let result = s3.putObject(putObjectRequest)
+    result.whenSuccess { _ in
+        completion(true)
+    }
+    
+    result.whenFailure { error in
+        completion(false)
+    }
+}
+```
 
-Here's how we implemented our chunked upload method with memory mapping:
+This method was typically called after loading the entire file into memory:
+
+```swift
+guard let fileData = try? Data(contentsOf: fileURL) else {
+    print("Failed to load file data")
+    return
+}
+
+s3Upload(data: fileData, key: "example-key") { success in
+    if success {
+        print("Upload successful")
+    } else {
+        print("Upload failed")
+    }
+}
+```
+
+### Issues with the Original Approach
+
+1. **Memory Usage**: 
+   - The entire file was loaded into memory at once with `Data(contentsOf: fileURL)`.
+   - For large files (e.g., 1GB or more), this could easily lead to memory warnings or app crashes.
+
+2. **Performance**: 
+   - Loading large files into memory is time-consuming and can cause the app to become unresponsive.
+
+3. **Scalability**: 
+   - This approach doesn't scale well for very large files. As file sizes increase, the likelihood of crashes increases.
+
+4. **User Experience**: 
+   - No progress reporting, making it difficult to provide feedback to users during long uploads.
+
+5. **Error Handling**: 
+   - Limited error information. The completion handler only provides a boolean, making it difficult to diagnose issues.
+
+6. **Network Efficiency**: 
+   - If the upload fails, the entire process needs to be restarted, wasting bandwidth and time.
+
+### Real-World Example
+
+Let's say we tried to upload a 500MB video file using this method:
+
+```swift
+let videoURL = URL(fileURLWithPath: "/path/to/large/video.mp4")
+guard let videoData = try? Data(contentsOf: videoURL) else {
+    print("Failed to load video data")
+    return
+}
+
+s3Upload(data: videoData, key: "large-video.mp4") { success in
+    if success {
+        print("Video upload successful")
+    } else {
+        print("Video upload failed")
+    }
+}
+```
+
+What would likely happen:
+
+1. The app would freeze momentarily while loading the 500MB file into memory.
+2. Memory usage would spike dramatically, potentially reaching hundreds of megabytes.
+3. On devices with limited memory, this could trigger a memory warning or crash the app.
+4. If the upload starts but fails midway (e.g., due to network issues), all progress is lost, and the entire 500MB needs to be uploaded again.
+5. The user would have no idea of the upload progress, leading to a poor user experience for such a large file.
+
+These issues led us to rethink our approach and develop the improved, chunked upload method.
+
+## Improved Approach
+
+Now, let's take a detailed look at our improved implementation:
 
 ```swift
 static func chunkedFileUpload(fileURL: URL, bucket: String, key: String) async -> Result<String, Error> {
@@ -26,7 +113,7 @@ static func chunkedFileUpload(fileURL: URL, bucket: String, key: String) async -
         
         let fileManager = FileManager.default
         
-        // Check file existence and attributes
+        // 파일 존재 여부 및 속성 확인
         guard let attributes = try? fileManager.attributesOfItem(atPath: fileURL.path),
               let fileSize = attributes[.size] as? Int64 else {
             let error = NSError(domain: "FileError", code: 0, userInfo: [NSLocalizedDescriptionKey: "Unable to get file attributes: \(fileURL.path)"])
@@ -36,11 +123,14 @@ static func chunkedFileUpload(fileURL: URL, bucket: String, key: String) async -
         }
         
         print("File size: \(fileSize) bytes")
+        if let filePermissions = attributes[.posixPermissions] as? Int {
+            print("File permissions: \(String(format:"%o", filePermissions))")
+        }
         
-        // S3 configuration
-        let s3 = S3(/* Configure S3 client */)
+        // S3 설정
+        let s3 = S3()
         
-        // Create multipart upload
+        // 멀티파트 업로드 생성
         let multipartUpload = s3.createMultipartUpload(.init(bucket: bucket, key: key))
         
         multipartUpload.whenSuccess { createMultipartUploadOutput in
@@ -51,22 +141,22 @@ static func chunkedFileUpload(fileURL: URL, bucket: String, key: String) async -
                 return
             }
             
-            // Set chunk size (e.g., 5MB)
+            // 청크 사이즈 설정 (예: 5MB)
             let chunkSize = 5 * 1024 * 1024
             var partNumber = 1
             var uploadedParts: [S3.CompletedPart] = []
             
-            // Read and upload file in chunks
+            // 청크 단위로 파일 읽기 및 업로드
             func uploadNextChunk() {
                 autoreleasepool {
                     do {
-                        // Use memory mapping to efficiently handle large files
+                        // 메모리 매핑을 사용하여 파일 데이터에 접근
                         let data = try Data(contentsOf: fileURL, options: .mappedIfSafe)
                         let startIndex = (partNumber - 1) * chunkSize
                         let endIndex = min(startIndex + chunkSize, data.count)
                         
                         if startIndex >= data.count {
-                            // All parts uploaded, complete multipart upload
+                            // 모든 파트 업로드 완료, 멀티파트 업로드 완료 요청
                             print("All parts uploaded. Completing multipart upload.")
                             let completeMultipartUpload = s3.completeMultipartUpload(.init(
                                 bucket: bucket,
@@ -76,7 +166,7 @@ static func chunkedFileUpload(fileURL: URL, bucket: String, key: String) async -
                             ))
                             
                             completeMultipartUpload.whenSuccess { _ in
-                                let path = "https://your-s3-endpoint/\(bucket)/\(key)"
+                                let path = endpoint + bucket + "/" + key
                                 print("Upload completed successfully. Path: \(path)")
                                 continuation.resume(returning: .success(path))
                             }
@@ -89,7 +179,7 @@ static func chunkedFileUpload(fileURL: URL, bucket: String, key: String) async -
                             let chunkData = data.subdata(in: startIndex..<endIndex)
                             print("Uploading part \(partNumber) (size: \(chunkData.count) bytes)")
                             
-                            // Upload part
+                            // 파트 업로드
                             let upload = s3.uploadPart(.init(
                                 body: .data(chunkData),
                                 bucket: bucket,
@@ -133,59 +223,47 @@ static func chunkedFileUpload(fileURL: URL, bucket: String, key: String) async -
 }
 ```
 
-## Key Improvements in Data Handling
+Let's break down the key improvements and their significance:
 
-1. **Memory Mapping with `.mappedIfSafe`**: 
+1. **Memory Mapping with `.mappedIfSafe`**:
    ```swift
    let data = try Data(contentsOf: fileURL, options: .mappedIfSafe)
    ```
-   - This option attempts to memory-map the file if it's safe to do so.
+   - This is the most crucial improvement. It uses memory mapping to efficiently handle large files.
    - Benefits:
      - Reduced memory overhead: The entire file isn't loaded into memory at once.
      - Improved performance: The OS can efficiently manage file access.
      - Better scalability: Can handle very large files more easily.
 
-2. **Chunked Reading**:
-   ```swift
-   let startIndex = (partNumber - 1) * chunkSize
-   let endIndex = min(startIndex + chunkSize, data.count)
-   let chunkData = data.subdata(in: startIndex..<endIndex)
-   ```
-   - We're still reading the file in chunks, even with memory mapping.
-   - This ensures we're only working with a small portion of the file at a time.
+2. **Detailed Error Handling and Logging**:
+   - The improved version includes more detailed error messages and logging throughout the process.
+   - This aids in debugging and provides better insight into the upload process.
 
-3. **Autorelease Pool Usage**:
-   - Each chunk processing is wrapped in an `autoreleasepool {}` block.
-   - This ensures that temporary objects created during chunk processing are released promptly, preventing memory buildup.
+3. **Chunked Upload Process**:
+   - The file is read and uploaded in chunks of 5MB.
+   - This allows for efficient handling of large files and provides opportunities for progress tracking.
 
-## Deep Dive: Memory Mapping with `.mappedIfSafe`
+4. **Completion Handling**:
+   - The function uses `Result<String, Error>` to clearly communicate the outcome of the upload.
+   - It provides the final URL of the uploaded file on success.
 
-1. **How it works**:
-   - When `.mappedIfSafe` is used, the system attempts to map the file directly into memory.
-   - Instead of reading the entire file into RAM, the file is mapped into virtual memory.
-   - The OS handles loading the actual data from disk as needed, which can be more efficient.
+5. **Resource Management with `autoreleasepool`**:
+   - Each chunk processing is wrapped in an `autoreleasepool` block.
+   - This ensures efficient memory management by releasing temporary objects after each chunk is processed.
 
-2. **Benefits**:
-   - **Reduced Memory Usage**: The entire file doesn't need to be in RAM at once.
-   - **Faster Initial Load**: Mapping is generally faster than reading the entire file.
-   - **Efficient for Large Files**: Particularly beneficial for files larger than available RAM.
+6. **Flexible S3 Configuration**:
+   - While the S3 client is still configured within the function, it's more parameterized (using `bucket` and `key` as arguments).
+   - This makes the function more reusable across different S3 bucket configurations.
 
-3. **Safety Considerations**:
-   - The `IfSafe` part means it will fall back to loading the file normally if memory mapping isn't possible or safe.
-   - This can happen if the file is on a network volume, for example.
+7. **Comprehensive File Attribute Checking**:
+   - The function checks for file existence, size, and even permissions before starting the upload.
+   - This proactive checking can prevent issues later in the upload process.
 
-4. **Performance Impact**:
-   - For small files, the performance difference might be negligible.
-   - For large files, especially those larger than available RAM, the improvement can be substantial.
+8. **Recursive Chunk Uploading**:
+   - The `uploadNextChunk` function calls itself after successfully uploading each part.
+   - This creates a clean, recursive approach to handling the multi-part upload.
 
-## Memory Management Benefits
+9. **Detailed Progress Logging**:
+   - The function logs the size of each chunk being uploaded, which can be easily extended to provide user-facing progress updates.
 
-1. **Controlled Memory Usage**: By using memory mapping and processing in chunks, we prevent large memory spikes.
-2. **Efficient File Access**: The OS can optimize file access, potentially improving performance.
-3. **Scalability**: This approach can handle files of any size, even those larger than available RAM.
-
-## Conclusion
-
-By implementing efficient data handling with memory mapping and chunking, we've created a robust solution for uploading large files. This approach significantly reduces memory usage, improves performance, and is more scalable for handling files of various sizes.
-
-When implementing file uploads in your iOS applications, consider adopting this approach with memory mapping and chunked processing. It ensures your app can handle files of any size efficiently without compromising performance or user experience.
+These improvements collectively result in a more robust, efficient, and scalable file upload function. The use of memory mapping and chunked uploading allows this function to handle files of virtually any size, while the detailed error handling and logging make it easier to monitor and debug the upload process.
