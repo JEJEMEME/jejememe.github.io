@@ -29,7 +29,7 @@ author_url: https://github.com/raykim2414
 
 ---
 
-## 현재 제제미미 프로젝트 상황
+## 현재 프로젝트 상황
 
 - **현재 사용 중**: Vercel Serverless Functions
 - **이슈/고민**:
