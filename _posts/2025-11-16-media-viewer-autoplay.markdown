@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "Media Viewer 자동 재생/정지 안정화 기록"
+title: "[iOS] Media Viewer 자동 재생/정지 안정화 기록"
 subtitle: "Error Case #2 · 썸네일 진입 시 자동재생 & 슬라이드 전환 시 정지"
 date: 2025-11-16
 categories: iOS Swift SwiftUI Debugging

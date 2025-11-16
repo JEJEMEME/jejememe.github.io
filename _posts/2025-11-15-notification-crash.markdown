@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "사진 알림 화면 재귀 락 크래시 분석 보고서"
+title: "[iOS] 사진 알림 화면 재귀 락 크래시 분석 보고서"
 subtitle: "ErrorCase #1 · 메인 스레드에서 발생한 재귀 락 강제 종료"
 date: 2025-11-15
 categories: iOS Swift Combine Concurrency Debugging

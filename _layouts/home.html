@@ -28,6 +28,9 @@ layout: default
               {{ post.title | escape }}
             </a>
           </h3>
+          {%- if post.subtitle -%}
+            <p class="post-subtitle">{{ post.subtitle }}</p>
+          {%- endif -%}
           {%- if site.show_excerpts -%}
             {{ post.excerpt }}
           {%- endif -%}

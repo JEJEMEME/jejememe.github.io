@@ -5,6 +5,9 @@ layout: default
 
   <header class="post-header">
     <h1 class="post-title p-name" itemprop="name headline">{{ page.title | escape }}</h1>
+    {%- if page.subtitle -%}
+      <p class="post-subtitle">{{ page.subtitle }}</p>
+    {%- endif -%}
     <p>by <a href="{{ page.author_url }}">{{ page.author }}</a></p>
     
     <p class="post-meta">
