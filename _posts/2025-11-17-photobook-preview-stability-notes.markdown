@@ -1,23 +1,33 @@
 ---
 layout: post
-title: "[iOS] PhotoBook Preview Stability Notes"
-subtitle: "Case File · OOM, Cache Thrash, 그리고 슬라이더 무력화"
+title: "[iOS] PhotoBook Preview 메모리 안정화 기록"
+subtitle: "Error Case #3 · OOM, Cache Thrash, 그리고 슬라이더 무력화"
 date: 2025-11-17
 categories: iOS Swift SwiftUI Debugging
 author: raykim
 author_url: https://github.com/raykim2414
 ---
 
-# PhotoBook Preview Stability Notes
+# PhotoBook Preview 메모리 안정화 기록
 
-> **Case File · OOM, Cache Thrash, 그리고 슬라이더 무력화**
+> **Error Case #3 · OOM, Cache Thrash, 그리고 슬라이더 무력화**
 
 ## TL;DR
 
-- 주문 버튼을 누르면 전 페이지를 다시 렌더링·압축하는데, 공용 `imageCache`가 수백 MB까지 부풀어 스냅샷 루프와 동시에 OOM이 터졌다.
-- 프리뷰·제작 모드가 같은 캐시를 공유해서 "렌더 중 다시 캐시에 적재"하는 악순환이 반복됐다.
-- 주문 시작 시 캐시를 먼저 비우고, 제작 단계에서는 디스크에서만 읽는 우회 경로를 둬 캐시가 다시 채워지지 않도록 했다.
-- 슬라이더는 `isUserInteractionEnabled = false`로 잠겨 있어 QA가 페이지 점프를 못 한다고 신고했다. 사용자 조작을 복원했다.
+- 동기식 전체 페이지 렌더 + 압축이 돌아가는 동안 공용 `imageCache`가 수백 MB까지 팽창해 OOM을 촉발했다.
+- 프리뷰/제작 모드가 같은 캐시를 공유하면서 “렌더 중 다시 캐시에 적재” 패턴이 무한 반복됐다.
+- 주문 플로우 진입 시 캐시를 명시적으로 비우고, 제작 단계는 디스크 직독 경로로 분리해 캐시 thrash를 차단했다.
+- 슬라이더는 비활성화된 채 장식만 담당하고 있어 디버깅 중 UX 시나리오 자체가 실패했다. 상호작용을 복원했다.
+
+## 시나리오 & 재현 조건
+
+- **환경**: iOS 18.x, SwiftUI + UIKit 혼합 뷰, 4GB RAM급 디바이스(아이패드 9세대/아이폰 15 등)에서 재현.
+- **데이터 세트**: 100페이지 프로젝트, 각 페이지가 12MP 내외 JPEG을 참조.
+- **재현 절차**
+  1. `PBPreview`에서 페이지를 전부 스크롤해 썸네일/페이지/커버 이미지를 캐시에 올린다.
+  2. 바로 “제작 주문” 버튼을 눌러 동기 렌더 + ZIP 업로드 루틴을 시작한다.
+  3. Instruments → Memory Graph / Allocations에서 `PBMakeViewModel.imageCache` 객체가 빠르게 수백 MB를 점유하고, 2~3회 GC 사이클 후 프로세스가 종료되는 것을 확인한다.
+- **관찰 지표**: resident size 1.7~1.8GB, dirty memory 급증, OOM 로그에는 메모리 워닝 없이 jetsam reason `0x8badf00d`가 기록됐다.
 
 ## 배경: 왜 터졌나
 
