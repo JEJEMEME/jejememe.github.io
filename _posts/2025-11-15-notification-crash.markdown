@@ -8,19 +8,23 @@ author: raykim
 author_url: https://github.com/raykim2414
 ---
 
-# 사진 알림 화면 재귀 락 크래시 분석 보고서
+# Alert Image Timeline Crash Analysis
 
+> **이슈**: 타임라인 CTA를 누른 뒤 알림 이미지 화면을 닫을 때 메인 스레드에서 `_os_unfair_lock_recursive_abort`가 발생하며 프로세스가 종료됐다.
+>
 > **ErrorCase #1 · 메인 스레드에서 발생한 재귀 락 강제 종료**
 
 ## TL;DR
 
-- 좋아요 버튼을 누르는 순간, 드물게 `EXC_BREAKPOINT (SIGTRAP)`이 발생하고 `FOUNDATION 1` 코드로 앱이 종료됐다.
-- 커스텀 구독 해제 컨테이너와 `AnyCancellable`이 동일한 `_os_unfair_lock`을 재귀적으로 잡으면서 시스템이 안전장치로 프로세스를 종료했다.
-- 구독을 약한 참조로 바꾸고, 해제 순서를 명시하며, completion 처리를 통합한 뒤 문제를 재현하지 못했다.
+- 크래시는 `EXC_BREAKPOINT (SIGKILL)` + termination reason `FOUNDATION 1` 형태로 재현됐고, 메인 스레드 `AnyCancellable.cancel()` 경로에서 `_os_unfair_lock_recursive_abort`가 확인됐다.
+- `Set<AnyCancellable>`와 `CancelBag` 두 컨테이너가 같은 구독을 동시에 해제하는 동안 `receive(on: DispatchQueue.main)` 콜백이 여전히 실행 중이라 Combine 내부 락에 재귀 진입했다.
+- 모든 구독을 단일 컨테이너로 모으고, 해제를 다음 메인 큐 턴으로 미루며, completion 처리를 표준화하자 동일 시나리오에서 더 이상 크래시가 발생하지 않았다.
 
 ## 배경
 
-사진과 영상을 빠르게 확인하는 알림형 화면이 있다. 이 화면은 여러 API 응답을 Combine 스트림으로 받아 UI를 갱신한다. 우리는 여러 구독을 한 번에 정리하기 위해 커스텀 “구독 해제 컨테이너(CancelBag)”를 만들어 두었고, 화면이 내려갈 때 이 컨테이너가 모든 구독을 자동으로 해제해 줄 것이라고 가정했다.
+알림 이미지/타임라인 화면은 라우팅 상태 바인딩, API 기반 미디어 페치, 좋아요·CTA 같은 사용자 액션 등 여러 Combine 파이프라인에 의존한다. 초기 구현에서는 구독 저장 전략을 두 갈래로 나눠 썼다. UI·미디어 스트림은 표준 `Set<AnyCancellable>`에 담고, 라우팅·헬퍼 스트림은 DSL 형태의 `cancelBag.collect { ... }`로 감싼 뒤 `CancelBag` 내부에 저장했다. 뷰모델이 해제되면 두 컨테이너가 거의 동시에 구독을 정리하면서도 서로 영향을 주지 않을 것이라 가정한 셈이다.
+
+문제는 같은 구독이 두 컨테이너에 중복 저장될 수 있었고, 각각이 메인 큐에서 synchronous `cancel()`을 호출하면서 `_os_unfair_lock`에 재귀 진입이 일어났다는 점이다. 아래 코드는 당시 구조를 단순화한 예시다. 
 
 ```swift
 final class NotificationViewModel {
@@ -127,6 +131,16 @@ cancelBag.collect {
 - `collect` 블록 안에서 만든 모든 `sink`가 `CancelBag` 내부 `Set`에 저장된다.
 - 각각의 `sink`는 다시 뷰모델을 강하게 붙잡고 있으므로, 컨테이너가 해제되기 전까지 뷰모델도 함께 살아 있게 된다.
 
+## Root Cause
+
+1. 타임라인 CTA 액션이 여전히 `receive(on: DispatchQueue.main)` 파이프라인을 따라 흐르는 동안 뷰모델이 해제되었다.
+2. `deinit`이 즉시 `cancelBag.cancelAll()`을 호출해 같은 큐에서 모든 구독을 취소하려 했다.
+3. 해당 구독 중 일부는 `Set<AnyCancellable>`에도 저장돼 있었고, `cancel()` 과정에서 Combine이 추가 정리 작업을 다시 메인 큐에 예약했다.
+4. 예약된 정리가 끝나기 전에 `Set<AnyCancellable>` 역시 소멸되며 동일한 구독에 대해 두 번째 `cancel()`이 호출되었다.
+5. `os_unfair_lock`은 재진입을 허용하지 않으므로 Combine 내부 락이 두 번째 진입을 감지하고 `_os_unfair_lock_recursive_abort`를 발생시켰다.
+
+즉, 중복 저장된 구독을 두 컨테이너가 같은 큐에서 동기 취소하면서 `receive(on:)` 콜백과 버무려져 메인 스레드 락 재진입이 일어난 셈이다.
+
 ## 문제 관찰
 
 TestFlight 사용자에게서 “좋아요 버튼을 누르자마자 앱이 꺼졌다”는 제보가 들어왔다. 크래시 리포트에는 `EXC_BREAKPOINT (SIGTRAP)`와 함께 `FOUNDATION 1` 이유 코드가 기록됐고, 스택 최상단에는 `_os_unfair_lock_recursive_abort`가 있었다. 메인 스레드에서 좋아요 응답을 처리하는 Combine 스트림이 해제되는 동안 동일한 경로로 다시 진입한 것이다.
@@ -172,35 +186,67 @@ Thread 0 Crashed:
 3. **스택 재구성**  
    `ReceiveOn` → `Sink` → `AnyCancellable.deinit` 순서가 두 번 반복되면서 `_os_unfair_lock_recursive_abort`가 호출되었고, 메인 스레드 런루프가 같은 블록을 재실행하는 형태였음을 확인했다.
 
+## Fix Summary
+
+1. **구독 저장소 단일화**: `AlertImageView.ViewModel` 내부 모든 구독을 `CancelBag` 한 곳에만 모아 어느 컨테이너가 언제 해제하는지 모호하지 않게 했다.
+2. **지연 취소 헬퍼 추가**: `cancelDeferred(on:)`를 도입해 락을 잡은 채 바로 `cancel()`하지 않고, 다음 메인 큐 턴에서 안전하게 구독을 끊도록 했다.
+3. **완료 처리·약한 캡처 표준화**: 모든 `sink`가 동일 completion 함수와 `[weak self]` 패턴을 사용하도록 정리해, 늦게 도착한 콜백이 중복 정리를 유발하지 않게 했다.
+
+아래는 각 조치에 대한 구현 세부다.
+
 ## 해결 방법
 
-### 1. 구독에서 뷰모델 참조를 약하게 유지
+### 1. 단일 CancelBag + 약한 캡처 기본화
 
 ```swift
-client.events
-    .receive(on: DispatchQueue.main)
-    .sink { [weak self] completion in
-        self?.log(completion)
-    } receiveValue: { [weak self] value in
-        guard let self else { return }
-        self.handle(value)
+final class AlertImageViewModel {
+    private let cancelBag = CancelBag()
+
+    init(client: APIClient, router: Router) {
+        client.events
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] completion in
+                self?.handle(completion)
+            } receiveValue: { [weak self] value in
+                self?.handle(value)
+            }
+            .store(in: cancelBag)
+
+        cancelBag.collect {
+            router.timelineCTA
+                .sink { [weak self] action in
+                    self?.route(action)
+                }
+        }
     }
-    .store(in: &cancellables)
-```
-
-뷰모델이 해제되는 도중에도 콜백이 들어오면 조용히 무시되므로, 런루프 작업과 소멸 시점이 충돌하지 않는다. 앞서 든 회전문 비유로 보면, 먼저 들어간 사람이 완전히 빠져나가기 전에 뒤따라오는 사람을 문 밖에서 기다리게 하는 셈이다.
-
-### 2. 해제 순서 정의
-
-```swift
-deinit {
-    cancellables.forEach { $0.cancel() }
-    cancellables.removeAll()
-    cancelBag.cancelAll()
 }
 ```
 
-먼저 `AnyCancellable`을 정리해 Combine 내부 락을 해제한 뒤, 마지막에 구독 해제 컨테이너를 닫도록 순서를 고정했다. 이제 동시에 락을 잡는 주체가 존재하지 않는다. 회전문 안에 한 명만 존재하도록 순번을 강제해, 같은 칸으로 두 명이 동시에 진입할 가능성을 제거한 것이다.
+`Set<AnyCancellable>`를 완전히 제거하고 `CancelBag` 한 곳에만 구독을 저장한다. 모든 `sink`가 `[weak self]`로 캡처하므로, 뷰모델 해제 도중 들어온 콜백은 자연스럽게 무시되고 동일 구독이 다른 컨테이너로 흘러드는 일도 없다.
+
+### 2. `cancelDeferred(on:)` 헬퍼 도입
+
+```swift
+extension CancelBag {
+    func cancelDeferred(on queue: DispatchQueue = .main) {
+        let snapshot: [AnyCancellable] = withLock {
+            let current = subscriptions
+            subscriptions.removeAll()
+            return Array(current)
+        }
+
+        queue.async {
+            snapshot.forEach { $0.cancel() }
+        }
+    }
+}
+
+deinit {
+    cancelBag.cancelDeferred()
+}
+```
+
+락을 잡은 상태에서는 구독 목록만 복사하고, 실제 `cancel()` 호출은 다음 메인 큐 턴으로 미룬다. `receive(on:)`이 아직 같은 런루프에서 실행 중이더라도 콜백이 끝날 시간을 벌 수 있어, `_os_unfair_lock`이 재귀로 잠기는 상황을 피할 수 있다.
 
 ### 3. 완료 처리 분리
 
@@ -215,21 +261,27 @@ private func handle(completion: Subscribers.Completion<Error>) {
 }
 ```
 
-모든 구독에서 동일한 completion 경로를 사용하면, 뷰모델이 중간에 사라져도 로그와 정리 로직이 일관되게 실행된다. 즉, 회전문을 빠져나가는 동선이 하나뿐이어서, 누가 먼저 나가든 같은 절차를 거치며 문이 다시 잠기지 않는다.
+모든 구독이 동일한 completion 함수와 `[weak self]` 패턴을 사용하면, 늦게 들어온 이벤트라도 같은 정리 루틴을 거쳐 idempotent하게 종료된다. 회전문을 빠져나가는 동선이 하나뿐이어서, 누가 먼저 나가든 같은 절차를 거치며 문이 다시 잠기지 않는다.
 
 ### 조치별로 재귀 락이 차단되는 지점
 
-- **약한 참조**: Step 2에서 예약된 cleanup 작업이 실행될 때 이미 `self`가 해제돼 있다면, 콜백이 조용히 return 하므로 Step 3~4로 진행하지 않는다.
-- **해제 순서**: Step 1에서 `Set<AnyCancellable>`를 먼저 비워 Step 4의 “두 번째 cancel 호출” 자체를 제거한다.
-- **공통 completion 경로**: 모든 구독이 동일한 종료 루틴을 거치므로, Step 2에서 어떤 구독이 먼저 끝나더라도 cleanup가 중복 호출되지 않는다.
+- **단일 CancelBag + 약한 캡처**: 뷰모델이 해제되면 추가 콜백이 바로 drop되어 중복 취소 경로가 열리지 않는다.
+- **cancelDeferred(on:)**: 락을 잡은 채 바로 `cancel()`하지 않아 `receive(on:)` 콜백이 동일 락에 재진입할 기회가 없다.
+- **공통 completion 경로**: 어떤 구독이 먼저 종료되더라도 동일한 루틴을 타므로 cleanup가 중복 실행돼도 부작용이 없다.
+
+## Verification
+
+- “알림 이미지 진입 → 타임라인 CTA 탭 → 화면 닫기” 플로우를 iOS 17/18 시뮬레이터와 실제 QA 기기에서 수십 회 반복했지만 `_os_unfair_lock_recursive_abort`가 재현되지 않았다.
+- 동일 빌드 Cohort의 크래시 로그를 다시 수집한 결과, 패치 이후에는 `FOUNDATION 1`/`EXC_BREAKPOINT` 레코드가 더 이상 보고되지 않았다.
 
 ## 초기 구현이 그렇게 된 이유 (추정)
 
 - **구현 속도 우선**: 당시 화면이 내부 QA 용도라 “모든 구독을 컨테이너에 넣고 한 번에 취소한다”는 단순 패턴을 택했다.
 
-## 얻은 교훈
+## Takeaways
 
-1. **비동기 해제 순서는 명시하자**: “언젠가 컨테이너가 취소해주겠지”라는 추상적인 가정은 교착 상태로 이어질 수 있다.
-2. **약한 참조를 기본값으로 생각하자**: UI 오브젝트를 다루는 Combine 구독은 기본적으로 `[weak self]`를 붙이고, 정말 필요한 경우에만 강한 참조를 허용해야 한다.
+1. **뷰모델당 취소 컨테이너는 하나로 통일**해 어느 경로에서 구독이 해제되는지 항상 추적 가능하게 유지하자.
+2. **`receive(on:)`과 해제가 같은 큐에서 맞부딪칠 수 있으면 취소를 다음 큐 턴에 위임**해 런루프가 락을 풀 시간을 벌어주자.
+3. **라우팅/상태 바인딩 구독을 외부로 중복 노출하지 말고 캡슐화**해, 동일 구독이 여러 소유자에게 흩어지는 상황을 원천 차단하자.
 
 
